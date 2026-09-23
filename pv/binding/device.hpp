@@ -47,7 +47,8 @@ class Device : public Binding
 	Q_OBJECT
 
 public:
-	Device(shared_ptr<sigrok::Configurable> configurable);
+	Device(shared_ptr<sigrok::Configurable> configurable, bool scope_controls_only = false,
+		const std::map<std::string, Glib::VariantBase> &initial_values = {});
 
 Q_SIGNALS:
 	void config_changed();

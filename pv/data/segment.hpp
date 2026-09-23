@@ -71,6 +71,7 @@ public:
 	uint64_t get_sample_count() const;
 
 	const pv::util::Timestamp& start_time() const;
+	void set_start_time(const pv::util::Timestamp &time) { start_time_ = time; }
 
 	double samplerate() const;
 	void set_samplerate(double samplerate);

@@ -167,22 +167,27 @@ void DecodeSignal::reset_decode(bool shutting_down)
 {
 	resume_decode();  // Make sure the decode thread isn't blocked by pausing
 
+	// Stop the worker before touching srd_session_. In particular, changing
+	// an analog-to-logic conversion can call this method from the GUI thread
+	// while the decoder worker is inside srd_session_send() or
+	// srd_inst_flush(). libsigrokdecode sessions are not safe to use from
+	// both threads at once.
+	decode_interrupt_ = true;
+	decode_input_cond_.notify_one();
+	if (decode_thread_.joinable()) {
+		decode_thread_.join();
+	}
+
+	logic_mux_interrupt_ = true;
+	logic_mux_cond_.notify_one();
+	if (logic_mux_thread_.joinable()) {
+		logic_mux_thread_.join();
+	}
+
 	if (stack_config_changed_ || shutting_down)
 		stop_srd_session();
 	else
 		terminate_srd_session();
-
-	if (decode_thread_.joinable()) {
-		decode_interrupt_ = true;
-		decode_input_cond_.notify_one();
-		decode_thread_.join();
-	}
-
-	if (logic_mux_thread_.joinable()) {
-		logic_mux_interrupt_ = true;
-		logic_mux_cond_.notify_one();
-		logic_mux_thread_.join();
-	}
 
 	current_segment_id_ = 0;
 	segments_.clear();
@@ -270,21 +275,18 @@ void DecodeSignal::begin_decode()
 
 void DecodeSignal::pause_decode()
 {
-	decode_paused_ = true;
+	decode_paused_.store(true);
 }
 
 void DecodeSignal::resume_decode()
 {
-	// Manual unlocking is done before notifying, to avoid waking up the
-	// waiting thread only to block again (see notify_one for details)
-	decode_pause_mutex_.unlock();
+	decode_paused_.store(false);
 	decode_pause_cond_.notify_one();
-	decode_paused_ = false;
 }
 
 bool DecodeSignal::is_paused() const
 {
-	return decode_paused_;
+	return decode_paused_.load();
 }
 
 const vector<decode::DecodeChannel> DecodeSignal::get_channels() const
@@ -611,6 +613,8 @@ void DecodeSignal::get_annotation_subset(deque<const Annotation*> &dest,
 uint32_t DecodeSignal::get_binary_data_chunk_count(uint32_t segment_id,
 	const Decoder* dec, uint32_t bin_class_id) const
 {
+	lock_guard<mutex> lock(output_mutex_);
+
 	if ((segments_.size() == 0) || (segment_id >= segments_.size()))
 		return 0;
 
@@ -734,6 +738,28 @@ const DecodeBinaryClass* DecodeSignal::get_binary_data_class(uint32_t segment_id
 			return &bc;
 
 	return nullptr;
+}
+
+bool DecodeSignal::copy_binary_data_class(uint32_t segment_id,
+	const Decoder* dec, uint32_t bin_class_id, DecodeBinaryClass* dest) const
+{
+	if (!dest)
+		return false;
+
+	lock_guard<mutex> lock(output_mutex_);
+
+	if (segment_id >= segments_.size())
+		return false;
+
+	const DecodeSegment* segment = &(segments_[segment_id]);
+	for (const DecodeBinaryClass& bc : segment->binary_classes) {
+		if ((bc.decoder == dec) && (bc.info->bin_class_id == bin_class_id)) {
+			*dest = bc;
+			return true;
+		}
+	}
+
+	return false;
 }
 
 const deque<const Annotation*>* DecodeSignal::get_all_annotations_by_segment(
@@ -1338,9 +1364,11 @@ void DecodeSignal::decode_data(
 		// possibly have new annotations as well
 		new_annotations();
 
-		if (decode_paused_) {
+		if (decode_paused_.load()) {
 			unique_lock<mutex> pause_wait_lock(decode_pause_mutex_);
-			decode_pause_cond_.wait(pause_wait_lock);
+			decode_pause_cond_.wait(pause_wait_lock, [this]() {
+				return !decode_paused_.load() || decode_interrupt_.load();
+			});
 		}
 	}
 }
@@ -1720,6 +1748,8 @@ void DecodeSignal::binary_callback(srd_proto_data *pdata, void *decode_signal)
 
 	if (ds->decode_interrupt_)
 		return;
+
+	lock_guard<mutex> lock(ds->output_mutex_);
 
 	// Get the decoder and the binary data
 	assert(pdata->pdo);

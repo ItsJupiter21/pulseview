@@ -45,6 +45,7 @@ set(pulseview_TEST_SOURCES
 	${PROJECT_SOURCE_DIR}/pv/devices/inputfile.cpp
 	${PROJECT_SOURCE_DIR}/pv/devices/sessionfile.cpp
 	${PROJECT_SOURCE_DIR}/pv/dialogs/connect.cpp
+	${PROJECT_SOURCE_DIR}/pv/dialogs/analogtools.cpp
 	${PROJECT_SOURCE_DIR}/pv/dialogs/inputoutputoptions.cpp
 	${PROJECT_SOURCE_DIR}/pv/dialogs/settings.cpp
 	${PROJECT_SOURCE_DIR}/pv/dialogs/storeprogress.cpp
@@ -96,6 +97,9 @@ set(pulseview_TEST_SOURCES
 	${PROJECT_SOURCE_DIR}/pv/widgets/timestampspinbox.cpp
 	${PROJECT_SOURCE_DIR}/pv/widgets/wellarray.cpp
 	data/analogsegment.cpp
+	data/dsp.cpp
+	view/analoghover.cpp
+	analog_scope.cpp
 	data/logicsegment.cpp
 	data/segment.cpp
 	view/ruler.cpp
@@ -213,4 +217,3 @@ add_executable(pulseview-test
 )
 
 target_link_libraries(pulseview-test ${PULSEVIEW_LINK_LIBS})
-

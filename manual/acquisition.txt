@@ -119,6 +119,40 @@ send data before it can show anything. There is currently no frame limit, so if 
 supports it, PulseView will continue arming the trigger and collecting data until you either click
 "Stop" or it runs out of memory.
 
+=== Oscilloscope Window
+
+Select *Oscilloscope* in the toolbar to view enabled analog and math channels on
+a shared 10-by-8 division grid. Select a channel to adjust its display V/div and
+offset. *Autoset display* fits the completed waveform; it does not perform a
+hardware autoset or estimate signal frequency.
+
+*Run* repeatedly acquires finite blocks. *Single* acquires one block. *Stop*
+cancels further acquisitions, including a queued restart, and leaves the last
+completed waveform visible. The prior waveform remains visible while a new
+block is acquired. Closing the scope window also stops repeated capture.
+Normal captures and protocol decoding remain available in the main window.
+
+Time/div sets the displayed duration to ten divisions. For devices exposing a
+hardware timebase list, the nearest supported timebase is applied. When sample
+limits are supported, the block size is derived from the selected sample rate
+and duration, with a minimum of 100 and maximum of 100 million samples. Use the
+main acquisition toolbar to set the sample rate. Devices must support a finite
+sample limit or frame limit. Repeated capture waits for generated analog traces
+to complete before replacing their source data.
+
+Hardware controls expose the driver's supported trigger source, slope and
+level, coupling, probe factor, and channel/group voltage range. Edits are
+committed when Run or Single is pressed. Unavailable trigger settings are marked
+as such; software triggering is not emulated. Display scale and offset are
+independent of hardware range. Scope display settings and hardware control
+values used for capture are saved with the session setup. Restoring a setup
+opens its windows but never automatically starts acquisition.
+
+File captures can be inspected in both scope and spectrum windows; acquisition
+buttons are unavailable for file devices. This mode uses repeated block capture,
+not continuous streaming; persistence overlays and automatic measurements are
+outside this initial implementation.
+
 === Channel Groups
 
 Some devices share certain settings between a group of channels, which is why PulseView may show
@@ -131,4 +165,3 @@ on the dark gray bar and select "Ungroup".
 If you want to create a new group, select the signals you want to group by holding down CTRL
 and clicking on the signal labels. Once you have selected the ones you want to be grouped,
 right-click on one of the labels you selected and choose "Group".
-

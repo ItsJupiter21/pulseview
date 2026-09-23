@@ -23,11 +23,14 @@
 #include <cassert>
 
 #include <QAction>
+#include <QApplication>
 #include <QDebug>
 #include <QFileDialog>
 #include <QHelpEvent>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPixmap>
 #include <QSettings>
 #include <QToolTip>
 
@@ -41,6 +44,8 @@
 #include <pv/devices/inputfile.hpp>
 #include <pv/devices/sessionfile.hpp>
 #include <pv/dialogs/connect.hpp>
+#include <pv/dialogs/analogtools.hpp>
+#include <QPointer>
 #include <pv/dialogs/inputoutputoptions.hpp>
 #include <pv/dialogs/storeprogress.hpp>
 #include <pv/mainwindow.hpp>
@@ -87,6 +92,20 @@ const uint64_t MainBar::DefaultSampleCount = 1000000;
 
 const char *MainBar::SettingOpenDirectory = "MainWindow/OpenDirectory";
 const char *MainBar::SettingSaveDirectory = "MainWindow/SaveDirectory";
+
+static QIcon themed_toolbar_icon(const char *path)
+{
+	const QPixmap source = QIcon(path).pixmap(QSize(24, 24));
+	QPixmap tinted(source.size());
+	tinted.fill(Qt::transparent);
+
+	QPainter painter(&tinted);
+	painter.drawPixmap(0, 0, source);
+	painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+	painter.fillRect(tinted.rect(), QApplication::palette().color(QPalette::ButtonText));
+
+	return QIcon(tinted);
+}
 
 MainBar::MainBar(Session &session, QWidget *parent, pv::views::trace::View *view) :
 	StandardBar(session, parent, view, false),
@@ -256,7 +275,7 @@ MainBar::MainBar(Session &session, QWidget *parent, pv::views::trace::View *view
 #endif
 
 	// Setup the math signal button
-	add_math_signal_button_->setIcon(QIcon(":/icons/add-math-signal.svg"));
+	add_math_signal_button_->setIcon(themed_toolbar_icon(":/icons/add-math-signal.svg"));
 	add_math_signal_button_->setPopupMode(QToolButton::InstantPopup);
 	add_math_signal_button_->setToolTip(tr("Add math signal"));
 	add_math_signal_button_->setShortcut(QKeySequence(Qt::Key_M));
@@ -279,7 +298,7 @@ MainBar::MainBar(Session &session, QWidget *parent, pv::views::trace::View *view
 		QIcon(":/icons/preferences-system.png")));
 
 	channels_button_.setToolTip(tr("Configure Channels"));
-	channels_button_.setIcon(QIcon(":/icons/channels.svg"));
+	channels_button_.setIcon(themed_toolbar_icon(":/icons/channels.svg"));
 
 	add_toolbar_widgets();
 
@@ -944,6 +963,23 @@ void MainBar::add_toolbar_widgets()
 	addWidget(add_decoder_button_);
 #endif
 	addWidget(add_math_signal_button_);
+	auto *tools = addAction(tr("Analog tools"));
+	connect(tools, &QAction::triggered, this, [this]() {
+		dialogs::edit_analog_processing(session_, this);
+	});
+	for (bool spectrum : {false, true}) {
+		auto *action = addAction(spectrum ? tr("Spectrum") : tr("Oscilloscope"));
+		auto window = std::make_shared<QPointer<QDialog>>();
+		connect(action, &QAction::triggered, this, [this, spectrum, window]() {
+			if (!*window) *window = dialogs::create_analog_view(session_, this, spectrum);
+			(*window)->show(); (*window)->raise(); (*window)->activateWindow();
+		});
+		connect(&session_, &Session::setup_restored, this, [this, action, spectrum, window]() {
+			const bool open = session_.analog_tool_settings.value(spectrum ? "spectrum/open" : "scope/open").toBool();
+			if (*window) delete window->data();
+			if (open) action->trigger();
+		});
+	}
 }
 
 bool MainBar::eventFilter(QObject *watched, QEvent *event)

@@ -93,7 +93,11 @@ void QHexView::set_mode(Mode m)
 
 void QHexView::set_data(const DecodeBinaryClass* data)
 {
-	data_ = data;
+	if (data) {
+		data_snapshot_ = *data;
+		data_ = &data_snapshot_;
+	} else
+		data_ = nullptr;
 
 	size_t size = 0;
 	if (data) {

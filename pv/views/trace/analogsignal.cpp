@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <map>
 #include <vector>
 
 #include <QApplication>
@@ -32,9 +33,13 @@
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QLabel>
+#include <QRegularExpression>
 #include <QString>
 
 #include "analogsignal.hpp"
+#include "analoghover.hpp"
+#include "viewport.hpp"
+#include "ruler.hpp"
 #include "logicsignal.hpp"
 #include "view.hpp"
 
@@ -98,7 +103,6 @@ const int AnalogSignal::InfoTextMarginBottom = 5;
 
 AnalogSignal::AnalogSignal(pv::Session &session, shared_ptr<data::SignalBase> base) :
 	LogicSignal(session, base),
-	value_at_hover_pos_(std::numeric_limits<float>::quiet_NaN()),
 	scale_index_(4), // 20 per div
 	pos_vdivs_(1),
 	neg_vdivs_(1),
@@ -302,6 +306,16 @@ void AnalogSignal::paint_fore(QPainter &p, ViewItemPaintParams &pp)
 		const int y = get_visual_y();
 
 		QString infotext;
+		const View *view = owner_->view();
+		float hover_value = std::numeric_limits<float>::quiet_NaN();
+		// Recompute during every repaint, including zoom, pan and acquisition
+		// updates while the mouse remains stationary. Header hover is not data.
+		if (show_hover_marker_ && (view->hover_widget() == view->viewport() ||
+			view->hover_widget() == view->ruler())) {
+			const auto segment = get_analog_segment_to_paint();
+			hover_value = analog_hover_value(segment.get(), pp.offset(), pp.scale(),
+				view->hover_point().x() - pp.left(), pp.width());
+		}
 
 		SIPrefix prefix;
 		if (fabs(signal_max_) > fabs(signal_min_))
@@ -312,14 +326,13 @@ void AnalogSignal::paint_fore(QPainter &p, ViewItemPaintParams &pp)
 		// Show the info section on the right side of the trace, including
 		// the value at the hover point when the hover marker is enabled
 		// and we have corresponding data available
-		if (show_hover_marker_ && !std::isnan(value_at_hover_pos_)) {
+		if (show_hover_marker_ && std::isfinite(hover_value)) {
 			infotext = QString("[%1] %2 V/div")
-				.arg(format_value_si(value_at_hover_pos_, prefix, 3, "V", false))
+				.arg(format_value_si(hover_value, prefix, 3, "V", false))
 				.arg(resolution_);
 		} else
 			infotext = QString("%1 V/div").arg(resolution_);
 
-		p.setPen(base_->color());
 		p.setFont(QApplication::font());
 
 		const QRectF bounding_rect = QRectF(pp.left(),
@@ -327,7 +340,22 @@ void AnalogSignal::paint_fore(QPainter &p, ViewItemPaintParams &pp)
 				pp.width() - InfoTextMarginRight,
 				v_extents().second - v_extents().first - InfoTextMarginBottom);
 
-		p.drawText(bounding_rect, Qt::AlignRight | Qt::AlignBottom, infotext);
+		// Keep the scale/value indicator readable when the waveform runs
+		// underneath it. The trace color alone is not guaranteed to contrast
+		// with either the waveform or the desktop palette.
+		const QFontMetrics metrics(p.font());
+		const QRect text_bounds = metrics.boundingRect(infotext);
+		QRectF label_rect = bounding_rect;
+		label_rect.setLeft(label_rect.right() - text_bounds.width() - 8);
+		label_rect.setTop(label_rect.bottom() - text_bounds.height() - 4);
+
+		p.save();
+		p.setPen(QPen(QApplication::palette().color(QPalette::Midlight)));
+		p.setBrush(QApplication::palette().color(QPalette::Base));
+		p.drawRoundedRect(label_rect, 2, 2);
+		p.setPen(QApplication::palette().color(QPalette::Text));
+		p.drawText(label_rect, Qt::AlignCenter, infotext);
+		p.restore();
 
 		if (show_hover_marker_)
 			paint_hover_marker(p);
@@ -422,9 +450,6 @@ void AnalogSignal::paint_trace(QPainter &p,
 	float *sample_block = new float[TracePaintBlockSize];
 	segment->get_samples(start, start + sample_count, sample_block);
 
-	if (show_hover_marker_)
-		reset_pixel_values();
-
 	const int w = 2;
 	for (int64_t sample = start; sample <= end; sample++, block_sample++) {
 
@@ -439,10 +464,6 @@ void AnalogSignal::paint_trace(QPainter &p,
 		const float x = left + abs_x;
 
 		*point++ = QPointF(x, y - sample_block[block_sample] * scale_);
-
-		// Generate the pixel<->value lookup table for the mouse hover
-		if (show_hover_marker_)
-			process_next_sample_value(abs_x, sample_block[block_sample]);
 
 		// Create the sampling points if needed
 		if (show_sampling_points) {
@@ -491,10 +512,6 @@ void AnalogSignal::paint_envelope(QPainter &p,
 	const double pixels_offset, const double samples_per_pixel)
 {
 	using pv::data::AnalogSegment;
-
-	// Note: Envelope painting currently doesn't generate a pixel<->value lookup table
-	if (show_hover_marker_)
-		reset_pixel_values();
 
 	AnalogSegment::EnvelopeSection e;
 	segment->get_envelope_section(e, start, end, samples_per_pixel);
@@ -606,26 +623,38 @@ void AnalogSignal::update_conversion_widgets()
 	for (pair<QString, int>& preset : presets)
 		conv_threshold_cb_->addItem(preset.first, preset.second);
 
-	map < QString, QVariant > options = base_->get_conversion_options();
-
+	// Keep a dedicated "Other" item for manually entered values. The custom
+	// item uses NoPreset (-1), which is also how SignalBase persists this choice.
 	if (conv_type == SignalBase::A2LConversionByThreshold) {
-		const vector<double> thresholds = base_->get_conversion_thresholds(
-				SignalBase::A2LConversionByThreshold, true);
-		conv_threshold_cb_->addItem(
-				QString("%1V").arg(QString::number(thresholds[0], 'f', 1)), -1);
-	}
-
-	if (conv_type == SignalBase::A2LConversionBySchmittTrigger) {
-		const vector<double> thresholds = base_->get_conversion_thresholds(
-				SignalBase::A2LConversionBySchmittTrigger, true);
-		conv_threshold_cb_->addItem(QString("%1V/%2V").arg(
-				QString::number(thresholds[0], 'f', 1),
-				QString::number(thresholds[1], 'f', 1)), -1);
+		conv_threshold_cb_->addItem(tr("Other"), SignalBase::NoPreset);
+	} else if (conv_type == SignalBase::A2LConversionBySchmittTrigger) {
+		conv_threshold_cb_->addItem(tr("Other"), SignalBase::NoPreset);
 	}
 
 	int preset_id = base_->get_current_conversion_preset();
-	conv_threshold_cb_->setCurrentIndex(
-			conv_threshold_cb_->findData(preset_id));
+	int preset_index = conv_threshold_cb_->findData(preset_id);
+	if (preset_index < 0) {
+		// A missing preset is only possible for malformed/old settings.
+		preset_index = conv_threshold_cb_->findData(SignalBase::DynamicPreset);
+		base_->set_conversion_preset(SignalBase::DynamicPreset);
+	}
+	conv_threshold_cb_->setCurrentIndex(preset_index);
+
+	const vector<double> thresholds = base_->get_conversion_thresholds(conv_type, true);
+	const bool schmitt = conv_type == SignalBase::A2LConversionBySchmittTrigger;
+	conv_threshold_low_label_->setText(schmitt ? tr("Low threshold") : tr("Threshold"));
+	conv_threshold_high_label_->setVisible(schmitt);
+	conv_threshold_high_sb_->setVisible(schmitt);
+	conv_threshold_low_sb_->blockSignals(true);
+	conv_threshold_high_sb_->blockSignals(true);
+	if (thresholds.size() >= 1)
+		conv_threshold_low_sb_->setValue(thresholds[0]);
+	if (thresholds.size() >= 2)
+		conv_threshold_high_sb_->setValue(thresholds[1]);
+	conv_threshold_low_sb_->blockSignals(false);
+	conv_threshold_high_sb_->blockSignals(false);
+	conv_threshold_values_->setVisible(preset_id == SignalBase::NoPreset &&
+		conv_type != SignalBase::NoConversion);
 
 	conv_threshold_cb_->blockSignals(false);
 }
@@ -732,64 +761,6 @@ void AnalogSignal::perform_autoranging(bool keep_divs, bool force_update)
 	update_scale();
 }
 
-void AnalogSignal::reset_pixel_values()
-{
-	value_at_pixel_pos_.clear();
-	current_pixel_pos_ = -1;
-	prev_value_at_pixel_ = std::numeric_limits<float>::quiet_NaN();
-}
-
-void AnalogSignal::process_next_sample_value(float x, float value)
-{
-	// Note: NAN is used to indicate the non-existance of a value at this pixel
-
-	if (std::isnan(prev_value_at_pixel_)) {
-		if (x < 0) {
-			min_value_at_pixel_ = value;
-			max_value_at_pixel_ = value;
-			prev_value_at_pixel_ = value;
-			current_pixel_pos_ = x;
-		} else
-			prev_value_at_pixel_ = std::numeric_limits<float>::quiet_NaN();
-	}
-
-	const int pixel_pos = (int)(x + 0.5);
-
-	if (pixel_pos > current_pixel_pos_) {
-		if (pixel_pos - current_pixel_pos_ == 1) {
-			if (std::isnan(prev_value_at_pixel_)) {
-				value_at_pixel_pos_.push_back(prev_value_at_pixel_);
-			} else {
-				// Average the min/max range to create one value for the previous pixel
-				const float avg = (min_value_at_pixel_ + max_value_at_pixel_) / 2;
-				value_at_pixel_pos_.push_back(avg);
-			}
-		} else {
-			// Interpolate values to create values for the intermediate pixels
-			const float start_value = prev_value_at_pixel_;
-			const float end_value = value;
-			const int steps = abs(pixel_pos - current_pixel_pos_);
-			const double gradient = (end_value - start_value) / steps;
-			for (int i = 0; i < steps; i++) {
-				if (current_pixel_pos_ + i < 0)
-					continue;
-				value_at_pixel_pos_.push_back(start_value + i * gradient);
-			}
-		}
-
-		min_value_at_pixel_ = value;
-		max_value_at_pixel_ = value;
-		prev_value_at_pixel_ = value;
-		current_pixel_pos_ = pixel_pos;
-	} else {
-		// Another sample for the same pixel
-		if (value < min_value_at_pixel_)
-			min_value_at_pixel_ = value;
-		if (value > max_value_at_pixel_)
-			max_value_at_pixel_ = value;
-	}
-}
-
 void AnalogSignal::populate_popup_form(QWidget *parent, QFormLayout *form)
 {
 	// Add the standard options
@@ -870,16 +841,38 @@ void AnalogSignal::populate_popup_form(QWidget *parent, QFormLayout *form)
 	connect(conversion_cb_, SIGNAL(currentIndexChanged(int)),
 		this, SLOT(on_conversion_changed(int)));
 
-    // Add the conversion threshold settings
+    // Add the conversion threshold settings. "Other" exposes the numeric
+    // controls below, keeping all manually entered values in volts.
     conv_threshold_cb_ = new QComboBox();
-    conv_threshold_cb_->setEditable(true);
 
     form->addRow(tr("Conversion threshold(s)"), conv_threshold_cb_);
 
-    connect(conv_threshold_cb_, SIGNAL(currentIndexChanged(int)),
+	connect(conv_threshold_cb_, SIGNAL(currentIndexChanged(int)),
             this, SLOT(on_conv_threshold_changed(int)));
-    connect(conv_threshold_cb_, SIGNAL(editTextChanged(const QString&)),
-            this, SLOT(on_conv_threshold_changed()));  // index will be -1
+
+	conv_threshold_values_ = new QWidget(parent);
+	QFormLayout *const threshold_form = new QFormLayout(conv_threshold_values_);
+	conv_threshold_low_sb_ = new QDoubleSpinBox(conv_threshold_values_);
+	conv_threshold_low_sb_->setRange(-1000000.0, 1000000.0);
+	conv_threshold_low_sb_->setDecimals(6);
+	conv_threshold_low_sb_->setSingleStep(0.1);
+	conv_threshold_low_sb_->setSuffix(tr(" V"));
+	conv_threshold_low_label_ = new QLabel(tr("Threshold"), conv_threshold_values_);
+	threshold_form->addRow(conv_threshold_low_label_, conv_threshold_low_sb_);
+
+	conv_threshold_high_sb_ = new QDoubleSpinBox(conv_threshold_values_);
+	conv_threshold_high_sb_->setRange(-1000000.0, 1000000.0);
+	conv_threshold_high_sb_->setDecimals(6);
+	conv_threshold_high_sb_->setSingleStep(0.1);
+	conv_threshold_high_sb_->setSuffix(tr(" V"));
+	conv_threshold_high_label_ = new QLabel(tr("High threshold"), conv_threshold_values_);
+	threshold_form->addRow(conv_threshold_high_label_, conv_threshold_high_sb_);
+	form->addRow(tr("Manual threshold(s)"), conv_threshold_values_);
+
+	connect(conv_threshold_low_sb_, SIGNAL(valueChanged(double)),
+		this, SLOT(on_conv_threshold_values_changed()));
+	connect(conv_threshold_high_sb_, SIGNAL(valueChanged(double)),
+		this, SLOT(on_conv_threshold_values_changed()));
 
 	// Add the display type dropdown
 	display_type_cb_ = new QComboBox();
@@ -898,23 +891,6 @@ void AnalogSignal::populate_popup_form(QWidget *parent, QFormLayout *form)
 
 	// Update the conversion widget contents and states
 	update_conversion_widgets();
-}
-
-void AnalogSignal::hover_point_changed(const QPoint &hp)
-{
-	Signal::hover_point_changed(hp);
-
-	// Note: Even though the view area begins at 0, we exclude 0 because
-	// that's also the value given when the cursor is over the header to the
-	// left of the trace paint area
-	if (hp.x() <= 0) {
-		value_at_hover_pos_ = std::numeric_limits<float>::quiet_NaN();
-	} else {
-		if ((size_t)hp.x() < value_at_pixel_pos_.size())
-			value_at_hover_pos_ = value_at_pixel_pos_.at(hp.x());
-		else
-			value_at_hover_pos_ = std::numeric_limits<float>::quiet_NaN();
-	}
 }
 
 void AnalogSignal::on_setting_changed(const QString &key, const QVariant &value)
@@ -1083,96 +1059,40 @@ void AnalogSignal::on_conversion_changed(int index)
 
 void AnalogSignal::on_conv_threshold_changed(int index)
 {
-	SignalBase::ConversionType conv_type = base_->get_conversion_type();
-
-	// Note: index is set to -1 if the text in the combo box matches none of
-	// the entries in the combo box
-
-	if ((index == -1) && (conv_threshold_cb_->currentText().length() == 0))
+	const SignalBase::ConversionType conversion = base_->get_conversion_type();
+	if (conversion == SignalBase::NoConversion)
 		return;
 
-	// The combo box entry with the custom value has user_data set to -1
-	const int user_data = conv_threshold_cb_->findText(
-			conv_threshold_cb_->currentText());
-
-	const bool use_custom_thr = (index == -1) || (user_data == -1);
-
-	if (conv_type == SignalBase::A2LConversionByThreshold && use_custom_thr) {
-		// Not one of the preset values, try to parse the combo box text
-		// Note: Regex loosely based on
-		// https://txt2re.com/index-c++.php3?s=0.1V&1&-13
-		QString re1 = "([+-]?\\d*[\\.,]?\\d*)"; // Float value
-		QString re2 = "([a-zA-Z]*)"; // SI unit
-		const QString text = conv_threshold_cb_->currentText();
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-		QRegularExpression regex(re1 + re2);
-		if (!regex.match(text).hasMatch())
-			return;  // String doesn't match the regex
-
-		QStringList tokens = regex.match(text).capturedTexts();
-#else
-		QRegExp regex(re1 + re2);
-		if (!regex.exactMatch(text))
-			return;  // String doesn't match the regex
-
-		QStringList tokens = regex.capturedTexts();
-#endif
-
-		// For now, we simply assume that the unit is volt without modifiers
-		const double thr = tokens.at(1).toDouble();
-
-		// Only restart the conversion if the threshold was updated.
-		// We're starting a delayed conversion because the user may still be
-		// typing and the UI would lag if we kept on restarting it immediately
-		if (base_->set_conversion_option("threshold_value", thr))
-			base_->start_conversion(true);
-	}
-
-	if (conv_type == SignalBase::A2LConversionBySchmittTrigger && use_custom_thr) {
-		// Not one of the preset values, try to parse the combo box text
-		// Note: Regex loosely based on
-		// https://txt2re.com/index-c++.php3?s=0.1V/0.2V&2&14&-22&3&15
-		QString re1 = "([+-]?\\d*[\\.,]?\\d*)"; // Float value
-		QString re2 = "([a-zA-Z]*)"; // SI unit
-		QString re3 = "\\/"; // Forward slash, not captured
-		QString re4 = "([+-]?\\d*[\\.,]?\\d*)"; // Float value
-		QString re5 = "([a-zA-Z]*)"; // SI unit
-		const QString text = conv_threshold_cb_->currentText();
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-		QRegularExpression regex(re1 + re2 + re3 + re4 + re5);
-
-		if (!regex.match(text).hasMatch())
-			return;  // String doesn't match the regex
-
-		QStringList tokens = regex.match(text).capturedTexts();
-#else
-		QRegExp regex(re1 + re2 + re3 + re4 + re5);
-
-		if (!regex.exactMatch(text))
-			return;  // String doesn't match the regex
-
-		QStringList tokens = regex.capturedTexts();
-#endif
-
-		// For now, we simply assume that the unit is volt without modifiers
-		const double low_thr = tokens.at(1).toDouble();
-		const double high_thr = tokens.at(3).toDouble();
-
-		// Only restart the conversion if one of the options was updated.
-		// We're starting a delayed conversion because the user may still be
-		// typing and the UI would lag if we kept on restarting it immediately
-		bool o1 = base_->set_conversion_option("threshold_value_low", low_thr);
-		bool o2 = base_->set_conversion_option("threshold_value_high", high_thr);
-		if (o1 || o2)
-			base_->start_conversion(true);  // Start delayed conversion
-	}
-
-	base_->set_conversion_preset((SignalBase::ConversionPreset)index);
-
-	// Immediately start the conversion if we're not using custom values
-	// (i.e. we're using one of the presets)
-	if (!use_custom_thr)
+	const int preset_id = conv_threshold_cb_->itemData(index).toInt();
+	conv_threshold_values_->setVisible(preset_id == SignalBase::NoPreset);
+	if (preset_id != SignalBase::NoPreset) {
+		base_->set_conversion_preset(static_cast<SignalBase::ConversionPreset>(preset_id));
 		base_->start_conversion();
+		return;
+	}
+
+	base_->set_conversion_preset(SignalBase::NoPreset);
+	base_->start_conversion();
+}
+
+void AnalogSignal::on_conv_threshold_values_changed()
+{
+	const SignalBase::ConversionType conversion = base_->get_conversion_type();
+	if (conversion == SignalBase::A2LConversionByThreshold) {
+		base_->set_conversion_option(QStringLiteral("threshold_value"),
+			conv_threshold_low_sb_->value());
+	} else if (conversion == SignalBase::A2LConversionBySchmittTrigger) {
+		if (conv_threshold_low_sb_->value() >= conv_threshold_high_sb_->value())
+			return;
+		base_->set_conversion_option(QStringLiteral("threshold_value_low"),
+			conv_threshold_low_sb_->value());
+		base_->set_conversion_option(QStringLiteral("threshold_value_high"),
+			conv_threshold_high_sb_->value());
+	} else {
+		return;
+	}
+	base_->set_conversion_preset(SignalBase::NoPreset);
+	base_->start_conversion(true);
 }
 
 void AnalogSignal::on_delayed_conversion_starter()

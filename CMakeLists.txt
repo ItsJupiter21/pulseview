@@ -356,6 +356,7 @@ set(pulseview_SOURCES
 	pv/devices/inputfile.cpp
 	pv/devices/sessionfile.cpp
 	pv/dialogs/connect.cpp
+	pv/dialogs/analogtools.cpp
 	pv/dialogs/inputoutputoptions.cpp
 	pv/dialogs/settings.cpp
 	pv/dialogs/storeprogress.cpp
@@ -720,4 +721,5 @@ if(ENABLE_TESTS)
 	add_subdirectory(test)
 	enable_testing()
 	add_test(test ${CMAKE_CURRENT_BINARY_DIR}/test/pulseview-test)
+	set_tests_properties(test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()

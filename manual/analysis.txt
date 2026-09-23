@@ -67,6 +67,12 @@ method allows you to place the cursor quickly without having to enable it first.
 For timing comparison purposes, you can also enable a vertical marker line that
 follows your mouse cursor: _Settings_ -> _Views_ -> _Highlight mouse cursor_
 
+For analog traces, this also displays the voltage of the nearest recorded sample
+at the cursor's time position. The value remains available when zoomed out to an
+envelope and updates when the view or capture changes beneath a stationary
+cursor. It is a sample value, not an interpolated value or an envelope average.
+No voltage is shown outside the segment's recorded time range.
+
 [NOTE]
 There is also a special kind of marker that appears for each time the data
 acquisition device has triggered. It cannot be moved and appears as a vertical
@@ -86,6 +92,44 @@ Among them are:
 * Timing - shows the time passing between the chosen signal edges
 
 === Other Features
+
+==== Analog Signal Tools
+
+The *Analog tools* toolbar action creates a math trace with optional filtering.
+Choose a source, use its name as the expression, or enter an expression such as
+`A0 - A1`. The existing expression editor remains available for advanced math.
+Use *Configure filtering / averaging* in a math trace's popup to edit its
+processing settings. Delete the trace using its existing context menu.
+
+Rolling averages use a trailing window of 1 to 1,000,000 samples. During startup,
+the average includes only samples received so far; it does not pad with zeros.
+Low-pass and high-pass filters are Butterworth filters of order 2, 4, 6 or 8.
+Band-pass and notch filters cascade constant-Q biquads, with center frequency
+equal to the geometric mean of the two frequency settings. Their specified
+band edges describe each section, not the final cascade's -3 dB bandwidth.
+Frequencies must be positive and below half the sample rate.
+
+Processing retains raw data and runs incrementally. State resets at each segment
+and capture boundary. Inputs to a math expression must have matching sample
+rates and start times; automatic resampling is not performed. Non-finite input
+samples reset filter history and remain non-finite in the output. Expression
+and processing settings are saved in the session setup; generated samples are
+recomputed from the raw capture when restored.
+
+==== Spectrum
+
+The *Spectrum* toolbar action opens a frequency-domain plot for a selected analog
+or math trace. It uses the last N samples of the latest completed segment, where
+N is a power of two from 32 to 1,048,576. Choose Rectangular, Hann, Hamming or
+Blackman windowing, optional DC removal, and linear or dB magnitude. Acquisition
+must supply a known sample rate and at least N samples.
+
+Magnitude is one-sided peak amplitude, corrected for window coherent gain.
+DC and the Nyquist bin are not doubled. The dB reference is one source unit
+(one volt for a voltage channel); it is not dBm or dBFS. The display floor is
+-240 dB. Automatic magnitude scaling can be disabled to use magnitude/div and
+center controls. FFT computation runs off the GUI thread. Spectrum settings and
+the open-window state are included in session setups.
 
 ==== Signal Label Area Resizing
 Trace Views also allow you to maximize the viewing area by minimizing the area

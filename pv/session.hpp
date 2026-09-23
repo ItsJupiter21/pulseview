@@ -185,6 +185,9 @@ public:
 	capture_state get_capture_state() const;
 	void start_capture(function<void (const QString)> error_handler);
 	void stop_capture();
+	void start_repeated_capture(function<void (const QString)> error_handler);
+	bool repeating() const { return repeat_capture_; }
+	QVariantMap analog_tool_settings;
 
 	double get_samplerate() const;
 	Glib::DateTime get_acquisition_start_time() const;
@@ -217,6 +220,7 @@ public:
 
 private:
 	void set_capture_state(capture_state state);
+	void repeat_next(uint64_t generation, function<void (const QString)> error_handler, unsigned attempts = 0);
 
 	void update_signals();
 
@@ -252,6 +256,8 @@ private:
 		shared_ptr<sigrok::Packet> packet);
 
 Q_SIGNALS:
+	void capture_finished();
+	void setup_restored();
 	void capture_state_changed(int state);
 	void device_changed();
 
@@ -290,6 +296,9 @@ private:
 
 	mutable mutex sampling_mutex_; //!< Protects access to capture_state_
 	capture_state capture_state_;
+	bool repeat_capture_ = false;
+	uint64_t capture_generation_ = 0;
+	QMetaObject::Connection repeat_connection_;
 
 	vector< shared_ptr<data::SignalBase> > signalbases_;
 	unordered_set< shared_ptr<data::SignalData> > all_signal_data_;

@@ -34,6 +34,7 @@
 #include "mathsignal.hpp"
 
 #include "pv/data/signalbase.hpp"
+#include <pv/dialogs/analogtools.hpp>
 
 using pv::data::SignalBase;
 
@@ -315,6 +316,12 @@ void MathSignal::populate_popup_form(QWidget *parent, QFormLayout *form)
 	connect(edit_action, SIGNAL(triggered(bool)),
 		this, SLOT(on_edit_clicked()));
 	form->addRow(tr("Expression"), expression_edit_);
+	auto *processing = new QPushButton(tr("Configure filtering / averaging"), parent);
+	connect(processing, &QPushButton::clicked, this, [this, parent]() {
+		dialogs::edit_analog_processing(session_, parent, math_signal_);
+		expression_edit_->setText(math_signal_->get_expression());
+	});
+	form->addRow(processing);
 
 	sample_count_cb_ = new QComboBox();
 	sample_count_cb_->setEditable(true);

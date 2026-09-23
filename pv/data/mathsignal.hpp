@@ -31,6 +31,7 @@
 #include <pv/exprtk.hpp>
 #include <pv/util.hpp>
 #include <pv/data/analog.hpp>
+#include <pv/data/dsp.hpp>
 #include <pv/data/signalbase.hpp>
 
 using std::atomic;
@@ -51,13 +52,14 @@ struct fnc_sample;
 
 struct signal_data {
 	signal_data(const shared_ptr<SignalBase> _sb) :
-		sb(_sb), sample_num(numeric_limits<uint64_t>::max()), sample_value(0), ref(nullptr)
+		sb(_sb), sample_num(numeric_limits<uint64_t>::max()), sample_value(0), ref(nullptr), segment_id(0)
 	{}
 
 	const shared_ptr<SignalBase> sb;
 	uint64_t sample_num;
 	double sample_value;
 	double* ref;
+	uint32_t segment_id;
 };
 
 class MathSignal : public SignalBase
@@ -77,6 +79,9 @@ public:
 
 	QString get_expression() const;
 	void set_expression(QString expression);
+	dsp::Options processing_options() const { return processing_options_; }
+	void set_processing_options(const dsp::Options &options);
+	void pause_generation();
 
 private:
 	void set_error(uint8_t type, QString msg);
@@ -123,6 +128,8 @@ private:
 	map<std::string, signal_data> input_signals_;
 
 	QString expression_;
+	dsp::Options processing_options_;
+	dsp::Processor processor_;
 
 	uint8_t error_type_;
 
@@ -136,6 +143,7 @@ private:
 	exprtk::expression<double> *exprtk_expression_;
 	exprtk::parser<double> *exprtk_parser_;
 	double exprtk_current_time_, exprtk_current_sample_;
+	double exprtk_sample_period_ = 1;
 
 	fnc_sample<double>* fnc_sample_;
 

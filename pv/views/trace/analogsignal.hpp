@@ -24,10 +24,13 @@
 
 #include <QColor>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QSpinBox>
 
 #include <pv/views/trace/signal.hpp>
 #include <pv/views/trace/logicsignal.hpp>
+
+class QLabel;
 
 using std::pair;
 using std::shared_ptr;
@@ -140,13 +143,8 @@ private:
 
 	void perform_autoranging(bool keep_divs, bool force_update);
 
-	void reset_pixel_values();
-	void process_next_sample_value(float x, float value);
-
 protected:
 	void populate_popup_form(QWidget *parent, QFormLayout *form);
-
-	virtual void hover_point_changed(const QPoint &hp);
 
 private Q_SLOTS:
 	virtual void on_setting_changed(const QString &key, const QVariant &value);
@@ -162,7 +160,8 @@ private Q_SLOTS:
 	void on_autoranging_changed(int state);
 
 	void on_conversion_changed(int index);
-	void on_conv_threshold_changed(int index=-1);
+	void on_conv_threshold_changed(int index);
+	void on_conv_threshold_values_changed();
 	void on_delayed_conversion_starter();
 
 	void on_display_type_changed(int index);
@@ -170,6 +169,9 @@ private Q_SLOTS:
 private:
 	QComboBox *resolution_cb_, *conversion_cb_, *conv_threshold_cb_,
 		*display_type_cb_;
+	QWidget *conv_threshold_values_;
+	QLabel *conv_threshold_low_label_, *conv_threshold_high_label_;
+	QDoubleSpinBox *conv_threshold_low_sb_, *conv_threshold_high_sb_;
 	QSpinBox *pvdiv_sb_, *nvdiv_sb_, *div_height_sb_;
 
 	double signal_min_, signal_max_;  // Min/max values of this signal's analog data
@@ -179,12 +181,6 @@ private:
 	bool show_sampling_points_, fill_high_areas_;
 
 	int conversion_threshold_disp_mode_;
-
-	vector<float> value_at_pixel_pos_;
-	float value_at_hover_pos_;
-	float prev_value_at_pixel_;  // Only used during lookup table update
-	float min_value_at_pixel_, max_value_at_pixel_;  // Only used during lookup table update
-	int current_pixel_pos_;  // Only used during lookup table update
 
 	// ---------------------------------------------------------------------------
 	// Note: Make sure to update save_settings() and restore_settings() when

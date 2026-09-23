@@ -136,6 +136,9 @@ Session::~Session()
 
 	// Stop and join to the thread
 	stop_capture();
+	for (const auto &signal : signalbases_)
+		if (auto math = std::dynamic_pointer_cast<data::MathSignal>(signal))
+			math->pause_generation();
 
 	for (SignalGroup* group : signal_groups_) {
 		group->clear();
@@ -220,6 +223,7 @@ bool Session::data_saved() const
 
 void Session::save_setup(QSettings &settings) const
 {
+	settings.setValue("analog_tools", analog_tool_settings);
 	int i;
 	int decode_signal_count = 0;
 	int gen_signal_count = 0;
@@ -375,6 +379,7 @@ void Session::save_settings(QSettings &settings) const
 
 void Session::restore_setup(QSettings &settings)
 {
+	analog_tool_settings = settings.value("analog_tools").toMap();
 	// Restore channels
 	for (shared_ptr<data::SignalBase> base : signalbases_) {
 		settings.beginGroup(base->internal_name());
@@ -464,6 +469,10 @@ void Session::restore_setup(QSettings &settings)
 
 		settings.endGroup();
 	}
+	for (const auto &signal : signalbases_)
+		if (auto math = std::dynamic_pointer_cast<data::MathSignal>(signal))
+			math->set_expression(math->get_expression());
+	Q_EMIT setup_restored();
 }
 
 void Session::restore_settings(QSettings &settings)
@@ -819,6 +828,9 @@ void Session::start_capture(function<void (const QString)> error_handler)
 	}
 
 	// Clear signal data
+	for (const auto &signal : signalbases_)
+		if (auto math = std::dynamic_pointer_cast<data::MathSignal>(signal))
+			math->pause_generation();
 	for (const shared_ptr<data::SignalData>& d : all_signal_data_)
 		d->clear();
 
@@ -843,12 +855,47 @@ void Session::start_capture(function<void (const QString)> error_handler)
 
 void Session::stop_capture()
 {
+	repeat_capture_ = false;
+	disconnect(repeat_connection_);
+	++capture_generation_;
 	if (get_capture_state() != Stopped)
 		device_->stop();
 
 	// Check that sampling stopped
 	if (sampling_thread_.joinable())
 		sampling_thread_.join();
+	if (!shutting_down_)
+		Q_EMIT capture_state_changed(Stopped);
+}
+
+void Session::start_repeated_capture(function<void (const QString)> error_handler)
+{
+	// Start only on the GUI thread, after the preceding worker has completed.
+	start_capture(error_handler);
+	repeat_capture_ = true;
+	const auto generation = capture_generation_;
+	repeat_connection_ = connect(this, &Session::capture_finished, this,
+		[this, generation, error_handler]() {
+			disconnect(repeat_connection_);
+			repeat_next(generation, error_handler);
+		}, Qt::QueuedConnection);
+}
+
+void Session::repeat_next(uint64_t generation, function<void (const QString)> error_handler, unsigned attempts)
+{
+	QTimer::singleShot(100, this, [this, generation, error_handler, attempts]() {
+		if (!repeat_capture_ || generation != capture_generation_ || shutting_down_) return;
+		for (const auto &signal : signalbases_) {
+			if (!signal->is_generated() || !signal->enabled() || !signal->get_error_message().isEmpty()) continue;
+			auto analog = signal->analog_data();
+			if (analog && (analog->analog_segments().empty() || !analog->analog_segments().back()->is_complete())) {
+				if (attempts < 100) repeat_next(generation, error_handler, attempts + 1);
+				else { stop_capture(); error_handler(tr("Analog processing did not finish; repeated capture stopped.")); }
+				return;
+			}
+		}
+		start_repeated_capture(error_handler);
+	});
 }
 
 void Session::register_view(shared_ptr<views::ViewBase> view)
@@ -1322,6 +1369,8 @@ void Session::sample_thread_proc(function<void (const QString)> error_handler)
 
 	if (out_of_memory_)
 		error_handler(tr("Out of memory, acquisition stopped."));
+	else
+		Q_EMIT capture_finished();
 }
 
 void Session::free_unused_memory()

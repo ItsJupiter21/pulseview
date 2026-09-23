@@ -26,6 +26,7 @@
 
 #include <QApplication>
 #include <QFormLayout>
+#include <QPainter>
 #include <QToolBar>
 
 #include "logicsignal.hpp"
@@ -607,7 +608,16 @@ void LogicSignal::modify_trigger()
 const QIcon* LogicSignal::get_icon(const char *path)
 {
 	if (!icon_cache_.contains(path)) {
-		const QIcon *icon = new QIcon(path);
+		const QPixmap source(path);
+		QPixmap tinted(source.size());
+		tinted.fill(Qt::transparent);
+		QPainter painter(&tinted);
+		painter.drawPixmap(0, 0, source);
+		painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+		painter.fillRect(tinted.rect(), QApplication::palette().color(QPalette::ButtonText));
+		painter.end();
+
+		const QIcon *icon = new QIcon(tinted);
 		icon_cache_.insert(path, icon);
 	}
 

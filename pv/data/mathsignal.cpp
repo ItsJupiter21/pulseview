@@ -72,8 +72,7 @@ struct fnc_sample : public exprtk::igeneric_function<T>
 		if (sample_num < 0)
 			return 0;
 
-		if (!sig_data)
-			sig_data = owner_.signal_from_name(str_sig_name);
+		sig_data = owner_.signal_from_name(str_sig_name);
 
 		if (!sig_data)
 			// There doesn't actually exist a signal with that name
@@ -93,6 +92,8 @@ struct fnc_sample : public exprtk::igeneric_function<T>
 MathSignal::MathSignal(pv::Session &session) :
 	SignalBase(nullptr, SignalBase::MathChannel),
 	session_(session),
+	custom_sample_rate_(0),
+	custom_sample_count_(0),
 	use_custom_sample_rate_(false),
 	use_custom_sample_count_(false),
 	expression_(""),
@@ -123,6 +124,11 @@ void MathSignal::save_settings(QSettings &settings) const
 	SignalBase::save_settings(settings);
 
 	settings.setValue("expression", expression_);
+	settings.setValue("processing/type", int(processing_options_.filter));
+	settings.setValue("processing/window", processing_options_.window);
+	settings.setValue("processing/order", processing_options_.order);
+	settings.setValue("processing/low", processing_options_.low);
+	settings.setValue("processing/high", processing_options_.high);
 
 	settings.setValue("custom_sample_rate", (qulonglong)custom_sample_rate_);
 	settings.setValue("custom_sample_count", (qulonglong)custom_sample_count_);
@@ -133,6 +139,12 @@ void MathSignal::save_settings(QSettings &settings) const
 void MathSignal::restore_settings(QSettings &settings)
 {
 	SignalBase::restore_settings(settings);
+	const int filter = settings.value("processing/type", 0).toInt();
+	processing_options_.filter = (filter >= 0 && filter <= 5) ? dsp::Filter(filter) : dsp::Filter::None;
+	processing_options_.window = settings.value("processing/window", 16).toUInt();
+	processing_options_.order = settings.value("processing/order", 2).toUInt();
+	processing_options_.low = settings.value("processing/low", 1000).toDouble();
+	processing_options_.high = settings.value("processing/high", 10000).toDouble();
 
 	if (settings.contains("expression"))
 		expression_ = settings.value("expression").toString();
@@ -155,8 +167,16 @@ QString MathSignal::get_expression() const
 	return expression_;
 }
 
+void MathSignal::set_processing_options(const dsp::Options &options)
+{
+	reset_generation();
+	processing_options_ = options;
+	begin_generation();
+}
+
 void MathSignal::set_expression(QString expression)
 {
+	pause_generation();
 	expression_ = expression;
 
 	begin_generation();
@@ -198,7 +218,7 @@ uint64_t MathSignal::get_working_sample_count(uint32_t segment_id) const
 
 				const uint32_t highest_segment_id = (analog_segments.size() - 1);
 				if (segment_id > highest_segment_id)
-					continue;
+					return 0;
 
 				const shared_ptr<AnalogSegment> segment = analog_segments.at(segment_id);
 				result = min(result, (int64_t)segment->get_sample_count());
@@ -252,13 +272,18 @@ void MathSignal::update_completeness(uint32_t segment_id, uint64_t output_sample
 		analog_data()->analog_segments().at(segment_id)->set_complete();
 }
 
-void MathSignal::reset_generation()
+void MathSignal::pause_generation()
 {
 	if (gen_thread_.joinable()) {
 		gen_interrupt_ = true;
 		gen_input_cond_.notify_one();
 		gen_thread_.join();
 	}
+}
+
+void MathSignal::reset_generation()
+{
+	pause_generation();
 
 	data_->clear();
 	input_signals_.clear();
@@ -320,7 +345,8 @@ void MathSignal::begin_generation()
 	exprtk_unknown_symbol_table_ = new exprtk::symbol_table<double>();
 
 	exprtk_symbol_table_ = new exprtk::symbol_table<double>();
-	exprtk_symbol_table_->add_constant("T", 1 / session_.get_samplerate());
+	exprtk_sample_period_ = 1 / session_.get_samplerate();
+	exprtk_symbol_table_->add_variable("T", exprtk_sample_period_, true);
 	exprtk_symbol_table_->add_function("sample", *fnc_sample_);
 	exprtk_symbol_table_->add_variable("t", exprtk_current_time_);
 	exprtk_symbol_table_->add_variable("s", exprtk_current_sample_);
@@ -394,7 +420,33 @@ uint64_t MathSignal::generate_samples(uint32_t segment_id, const uint64_t start_
 	// Keep the math functions segment IDs in sync
 	fnc_sample_->current_segment = segment_id;
 
-	const double sample_rate = data_->get_samplerate();
+	double sample_rate = data_->get_samplerate();
+	if (start_sample == 0) {
+		try {
+			bool first = true;
+			for (const auto &entry : input_signals_) {
+				if (entry.second.sb.get() == this) continue;
+				const auto &segments = entry.second.sb->analog_data()->analog_segments();
+				if (segment_id >= segments.size()) throw std::invalid_argument("Input segment is unavailable");
+				auto input = segments.at(segment_id);
+				if (first) {
+					sample_rate = input->samplerate();
+					segment->set_start_time(input->start_time());
+					segment->set_samplerate(sample_rate);
+					data_->set_samplerate(sample_rate);
+					first = false;
+				} else if (input->samplerate() != sample_rate || input->start_time() != segment->start_time())
+					throw std::invalid_argument("Math inputs must have matching sample rates and timestamps");
+			}
+			exprtk_sample_period_ = 1 / sample_rate;
+			processor_.reset(processing_options_, sample_rate);
+		}
+		catch (const std::exception &e) {
+			set_error(MATH_ERR_EXPRESSION, QString::fromUtf8(e.what()));
+			gen_interrupt_ = true;
+			return 0;
+		}
+	}
 
 	exprtk_current_sample_ = start_sample;
 
@@ -409,7 +461,7 @@ uint64_t MathSignal::generate_samples(uint32_t segment_id, const uint64_t start_
 		}
 
 		double value = exprtk_expression_->value();
-		sample_data[i] = value;
+		sample_data[i] = processor_.step(value);
 		exprtk_current_sample_ += 1;
 		count++;
 
@@ -438,7 +490,7 @@ void MathSignal::generation_proc()
 
 		if (data_->get_samplerate() == 1) {
 			unique_lock<mutex> gen_input_lock(input_mutex_);
-			gen_input_cond_.wait(gen_input_lock);
+			gen_input_cond_.wait_for(gen_input_lock, std::chrono::milliseconds(50));
 		}
 	} while ((!gen_interrupt_) && (data_->get_samplerate() == 1));
 
@@ -478,7 +530,7 @@ void MathSignal::generation_proc()
 			} while (!gen_interrupt_ && (processed_samples < samples_to_process));
 		}
 
-		update_completeness(segment_id, output_sample_count);
+		update_completeness(segment_id, output_segment->get_sample_count());
 
 		if (output_segment->is_complete() && (segment_id < session_.get_highest_segment_id())) {
 				// Process next segment
@@ -492,7 +544,7 @@ void MathSignal::generation_proc()
 		if (!gen_interrupt_ && (samples_to_process == 0)) {
 			// Wait for more input
 			unique_lock<mutex> gen_input_lock(input_mutex_);
-			gen_input_cond_.wait(gen_input_lock);
+			gen_input_cond_.wait_for(gen_input_lock, std::chrono::milliseconds(50));
 		}
 	} while (!gen_interrupt_);
 }
@@ -544,7 +596,7 @@ void MathSignal::update_signal_sample(signal_data* sig_data, uint32_t segment_id
 	assert(sig_data);
 
 	// Update the value only if a different sample is requested
-	if (sig_data->sample_num == sample_num)
+	if (sig_data->sample_num == sample_num && sig_data->segment_id == segment_id)
 		return;
 
 	assert(sig_data->sb);
@@ -556,6 +608,7 @@ void MathSignal::update_signal_sample(signal_data* sig_data, uint32_t segment_id
 	const shared_ptr<AnalogSegment> segment = analog->analog_segments().at(segment_id);
 
 	sig_data->sample_num = sample_num;
+	sig_data->segment_id = segment_id;
 
 	if (sample_num < segment->get_sample_count())
 		sig_data->sample_value = segment->get_sample(sample_num);

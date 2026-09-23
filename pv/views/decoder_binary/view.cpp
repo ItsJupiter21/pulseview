@@ -243,10 +243,11 @@ void View::update_data()
 	if (!signal_)
 		return;
 
-	const DecodeBinaryClass* bin_class =
-		signal_->get_binary_data_class(current_segment_, decoder_, bin_class_id_);
+	data::DecodeBinaryClass bin_class;
+	const bool have_data = signal_->copy_binary_data_class(current_segment_,
+		decoder_, bin_class_id_, &bin_class);
 
-	hex_view_->set_data(bin_class);
+	hex_view_->set_data(have_data ? &bin_class : nullptr);
 
 	if (!binary_data_exists_)
 		return;

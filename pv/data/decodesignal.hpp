@@ -192,6 +192,8 @@ public:
 		vector<uint8_t> *dest) const;
 	const DecodeBinaryClass* get_binary_data_class(uint32_t segment_id,
 		const Decoder* dec, uint32_t bin_class_id) const;
+	bool copy_binary_data_class(uint32_t segment_id, const Decoder* dec,
+		uint32_t bin_class_id, DecodeBinaryClass* dest) const;
 
 	const deque<const Annotation*>* get_all_annotations_by_segment(uint32_t segment_id) const;
 
@@ -272,7 +274,7 @@ private:
 	std::thread decode_thread_, logic_mux_thread_;
 	atomic<bool> decode_interrupt_, logic_mux_interrupt_;
 
-	bool decode_paused_;
+	atomic<bool> decode_paused_;
 
 	map<const srd_decoder*, shared_ptr<Logic>> output_logic_;
 	map<const srd_decoder*, vector<uint8_t>> output_logic_muxed_data_;

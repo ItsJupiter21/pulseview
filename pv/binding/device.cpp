@@ -26,6 +26,7 @@
 #include <pv/prop/bool.hpp>
 #include <pv/prop/enum.hpp>
 #include <pv/prop/int.hpp>
+#include <pv/prop/double.hpp>
 
 #include <libsigrokcxx/libsigrokcxx.hpp>
 
@@ -51,13 +52,21 @@ using pv::prop::Property;
 namespace pv {
 namespace binding {
 
-Device::Device(shared_ptr<sigrok::Configurable> configurable) :
+Device::Device(shared_ptr<sigrok::Configurable> configurable, bool scope_controls_only,
+	const map<string, Glib::VariantBase> &initial_values) :
 	configurable_(configurable)
 {
 
 	auto keys = configurable->config_keys();
 
 	for (auto key : keys) {
+		if (scope_controls_only && key == ConfigKey::TIMEBASE)
+			continue; // Controlled by the scope time/div selector.
+		if (scope_controls_only && key != ConfigKey::TIMEBASE && key != ConfigKey::VDIV &&
+			key != ConfigKey::COUPLING && key != ConfigKey::PROBE_FACTOR &&
+			key != ConfigKey::TRIGGER_SOURCE && key != ConfigKey::TRIGGER_SLOPE &&
+			key != ConfigKey::TRIGGER_LEVEL && key != ConfigKey::CAPTURE_RATIO)
+			continue;
 
 		string descr_str;
 		try {
@@ -84,8 +93,16 @@ Device::Device(shared_ptr<sigrok::Configurable> configurable) :
 			continue;
 		}
 
-		const Property::Getter get = [&, key]() {
-			return configurable_->config_get(key); };
+		const Property::Getter get = [this, key, initial_values]() {
+			auto actual = configurable_->config_get(key);
+			auto entry = initial_values.find(key->name());
+			if (entry != initial_values.end() && actual.gobj()) {
+				auto saved = entry->second;
+				if (g_variant_is_of_type(saved.gobj(), g_variant_get_type(actual.gobj())))
+					return saved;
+			}
+			return actual;
+		};
 		const Property::Setter set = [&, key](Glib::VariantBase value) {
 			configurable_->config_set(key, value);
 			config_changed();
@@ -99,6 +116,11 @@ Device::Device(shared_ptr<sigrok::Configurable> configurable) :
 
 		case SR_CONF_CAPTURE_RATIO:
 			bind_int(descr, "", "%", pair<int64_t, int64_t>(0, 100), get, set);
+			break;
+
+		case SR_CONF_TRIGGER_LEVEL:
+			properties_.push_back(std::make_shared<prop::Double>(descr, "", 6, " V",
+				pair<double,double>(-1e9,1e9), boost::none, get, set));
 			break;
 
 		case SR_CONF_LIMIT_FRAMES:

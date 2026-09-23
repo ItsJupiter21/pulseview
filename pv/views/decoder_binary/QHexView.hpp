@@ -93,6 +93,7 @@ private:
 private:
 	Mode mode_;
 	const DecodeBinaryClass* data_;
+	DecodeBinaryClass data_snapshot_;
 	size_t data_size_;
 
 	size_t posAddr_, posHex_, posAscii_;

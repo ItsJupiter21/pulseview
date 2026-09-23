@@ -689,7 +689,7 @@ void MainWindow::on_run_stop_clicked()
 		// Stop all acquisitions if there are any running ones, start all otherwise
 		bool any_running = any_of(hw_sessions.begin(), hw_sessions.end(),
 				[](const shared_ptr<Session> &s)
-				{ return (s->get_capture_state() == Session::AwaitingTrigger) ||
+				{ return s->repeating() || (s->get_capture_state() == Session::AwaitingTrigger) ||
 						(s->get_capture_state() == Session::Running); });
 
 		for (shared_ptr<Session> s : hw_sessions)
@@ -703,6 +703,10 @@ void MainWindow::on_run_stop_clicked()
 
 		if (!session)
 			return;
+		if (session->repeating()) {
+			session->stop_capture();
+			return;
+		}
 
 		switch (session->get_capture_state()) {
 		case Session::Stopped:

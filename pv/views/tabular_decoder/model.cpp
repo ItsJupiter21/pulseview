@@ -115,12 +115,17 @@ QVariant AnnotationCollectionModel::data(const QModelIndex& index, int role) con
 				((int64_t)ann->start_sample() <= highlight_sample_num_) &&
 				((int64_t)ann->end_sample() >= highlight_sample_num_);
 
-			if (must_highlight) {
-				if (GlobalSettings::current_theme_is_dark())
-					return QApplication::palette().brush(QPalette::Window);
-				else
-					return QApplication::palette().brush(QPalette::WindowText);
-			}
+			QColor background = must_highlight ? ann->color() :
+				(GlobalSettings::current_theme_is_dark() ?
+					ann->dark_color() : ann->bright_color());
+
+			// The desktop palette and PulseView's selected theme can differ
+			// (for example, KDE may provide a dark palette while PulseView's
+			// theme is set to None). Use the actual cell background to ensure
+			// annotation text remains readable.
+			if (background.isValid())
+				return background.lightnessF() > 0.52 ?
+					QColor(0x20, 0x20, 0x20) : QColor(0xf5, 0xf5, 0xf5);
 		}
 
 		return QApplication::palette().brush(QPalette::WindowText);
