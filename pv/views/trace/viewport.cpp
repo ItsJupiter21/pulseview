@@ -30,6 +30,7 @@
 #include <pv/session.hpp>
 
 #include <QMouseEvent>
+#include <QNativeGestureEvent>
 #include <QScreen>
 #include <QWindow>
 
@@ -266,6 +267,33 @@ void Viewport::wheelEvent(QWheelEvent *event)
 	assert(event);
 
 #if QT_VERSION >= QT_VERSION_CHECK(5, 12, 0)
+	// Trackpads (and Magic Mouse) report a scroll phase, wheels don't.
+	// Treat them like a native Mac view: swipe pans in both axes and
+	// Ctrl (Cmd on macOS) + vertical swipe zooms. Pinch is handled in event().
+	if (event->phase() != Qt::NoScrollPhase) {
+		const QPoint px = event->pixelDelta().isNull() ?
+			event->angleDelta() / 8 : event->pixelDelta();
+
+		if (event->modifiers() & Qt::ControlModifier) {
+			if (px.y() != 0)
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+				view_.zoom(px.y() / 60.0, event->position().x());
+#else
+				view_.zoom(px.y() / 60.0, event->x());
+#endif
+		} else {
+			if (px.x() != 0)
+				view_.set_scale_offset(view_.scale(),
+					-px.x() * view_.scale() + view_.offset());
+			if (px.y() != 0)
+				view_.set_v_offset(-view_.owner_visual_v_offset() - px.y());
+		}
+		event->accept();
+		return;
+	}
+#endif
+
+#if QT_VERSION >= QT_VERSION_CHECK(5, 12, 0)
 	int delta = (event->angleDelta().x() != 0) ? event->angleDelta().x() : event->angleDelta().y();
 #else
 	int delta = event->delta();
@@ -304,6 +332,26 @@ void Viewport::wheelEvent(QWheelEvent *event)
 		view_.set_scale_offset(view_.scale(),
 			delta * view_.scale() + view_.offset());
 	}
+}
+
+bool Viewport::event(QEvent *event)
+{
+	if (event->type() == QEvent::NativeGesture) {
+		QNativeGestureEvent *const g = static_cast<QNativeGestureEvent *>(event);
+
+		if (g->gestureType() == Qt::ZoomNativeGesture) {
+			// value() is the incremental magnification, zoom() works in
+			// steps of 3/2, so convert and zoom around the pointer.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+			view_.zoom(log1p(g->value()) / log(1.5), g->position().x());
+#else
+			view_.zoom(log1p(g->value()) / log(1.5), g->localPos().x());
+#endif
+			return true;
+		}
+	}
+
+	return ViewWidget::event(event);
 }
 
 void Viewport::on_setting_changed(const QString &key, const QVariant &value)

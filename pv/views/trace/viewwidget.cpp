@@ -237,6 +237,18 @@ bool ViewWidget::event(QEvent *event)
 	case QEvent::TouchBegin:
 	case QEvent::TouchUpdate:
 	case QEvent::TouchEnd:
+		// macOS delivers trackpad fingers as touch events too; those carry
+		// trackpad-relative positions and duplicate the wheel/gesture events,
+		// so only handle real touchscreens here.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+		if (static_cast<QTouchEvent *>(event)->device()->type() ==
+				QInputDevice::DeviceType::TouchPad)
+			break;
+#else
+		if (static_cast<QTouchEvent *>(event)->device()->type() ==
+				QTouchDevice::TouchPad)
+			break;
+#endif
 		if (touch_event(static_cast<QTouchEvent *>(event)))
 			return true;
 		break;

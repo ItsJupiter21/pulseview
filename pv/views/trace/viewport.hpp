@@ -101,6 +101,8 @@ private:
 
 	void wheelEvent(QWheelEvent *event);
 
+	bool event(QEvent *event);
+
 	void on_setting_changed(const QString &key, const QVariant &value);
 
 private:
